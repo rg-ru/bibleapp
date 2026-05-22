@@ -1,116 +1,369 @@
 import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
   BookOpen,
   Bookmark,
   Brain,
   Check,
   ChevronDown,
-  CircleHelp,
   Clock3,
-  Command,
   FileText,
   Highlighter,
   Library,
   ListChecks,
   MessageSquareText,
-  PanelRight,
   PenLine,
   Search,
   Sparkles,
 } from 'lucide-react';
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  BibleBook,
+  ChapterPayload,
+  ChapterVerse,
+  TranslationCode,
+  VersePayload,
+  canReadTestament,
+  clampNumber,
+  defaultTranslation,
+  fetchBookIndex,
+  fetchChapter,
+  fetchVerse,
+  formatReference,
+  getChapterNumbers,
+  getTranslation,
+  parseReference,
+  translations,
+} from './bible';
 import studyDesk from './assets/bible-study.jpg';
-import { initialNotes, libraryResources, passages, StudyNote } from './data';
+import { initialNotes, libraryResources, StudyNote } from './data';
 
-const lensOptions = ['Context', 'Words', 'Cross refs'] as const;
+const lensOptions = ['Context', 'Words', 'Parallel'] as const;
+const notesKey = 'lumen:bible-notes';
 
 type Lens = (typeof lensOptions)[number];
 
-function buildAssistantResponse(query: string, passageId: string) {
-  const passage = passages.find((item) => item.id === passageId) ?? passages[0];
+type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+function loadNotes() {
+  try {
+    const savedNotes = window.localStorage.getItem(notesKey);
+    return savedNotes ? (JSON.parse(savedNotes) as StudyNote[]) : initialNotes;
+  } catch {
+    return initialNotes;
+  }
+}
+
+function getSignificantWords(text: string) {
+  const stopWords = new Set([
+    'about',
+    'after',
+    'again',
+    'also',
+    'and',
+    'are',
+    'because',
+    'before',
+    'but',
+    'for',
+    'from',
+    'hath',
+    'have',
+    'him',
+    'his',
+    'into',
+    'not',
+    'shall',
+    'that',
+    'the',
+    'their',
+    'them',
+    'there',
+    'they',
+    'this',
+    'thou',
+    'unto',
+    'was',
+    'were',
+    'which',
+    'with',
+    'you',
+  ]);
+
+  return Array.from(
+    new Set(
+      text
+        .toLowerCase()
+        .replace(/[^a-z\s]/g, ' ')
+        .split(/\s+/)
+        .filter((word) => word.length > 3 && !stopWords.has(word)),
+    ),
+  ).slice(0, 10);
+}
+
+function buildAssistantResponse(
+  query: string,
+  translationName: string,
+  reference: string,
+  verse: ChapterVerse | undefined,
+  chapterData: ChapterPayload | null,
+) {
+  if (!verse || !chapterData) {
+    return 'Load a chapter first, then ask against the selected verse.';
+  }
+
   const normalized = query.trim().toLowerCase();
+  const words = getSignificantWords(verse.text).slice(0, 5);
 
-  if (normalized.includes('word') || normalized.includes('greek') || normalized.includes('hebrew')) {
-    return `${passage.wordStudy.word} (${passage.wordStudy.transliteration}) points to ${passage.wordStudy.meaning}`;
+  if (normalized.includes('outline') || normalized.includes('sermon')) {
+    return `${reference}: start with the chapter setting, trace the movement around verse ${verse.verse}, compare repeated terms, then state the main claim in one sentence.`;
   }
 
-  if (normalized.includes('cross') || normalized.includes('reference')) {
-    return `${passage.reference} connects well with ${passage.crossRefs.join(', ')}. Start with the first reference, then compare the shared theme.`;
+  if (normalized.includes('word') || normalized.includes('keyword')) {
+    return words.length
+      ? `${reference} has these study terms worth checking: ${words.join(', ')}.`
+      : `${reference} has no obvious repeated study terms in the current verse text.`;
   }
 
-  if (normalized.includes('sermon') || normalized.includes('outline')) {
-    return `A tight outline for ${passage.reference}: main claim, movement through the text, gospel connection, and one concrete response.`;
+  if (normalized.includes('context')) {
+    return `${reference} sits inside ${chapterData.book} ${chapterData.chapter}, a chapter with ${chapterData.verses.length} verses in ${translationName}. Read the verse before and after before building doctrine from it.`;
   }
 
-  return `${passage.reference}: ${passage.overview}`;
+  return `${reference} in ${translationName}: ${verse.text}`;
+}
+
+function getParallelCodes(current: TranslationCode, selectedBook: BibleBook | undefined) {
+  if (!selectedBook) {
+    return [current];
+  }
+
+  const baseline: TranslationCode[] =
+    selectedBook.testament === 'old'
+      ? ['kjv', 'asv', 'ylt', 'wlc', 'vulgate']
+      : ['kjv', 'asv', 'ylt', 'tr', 'vulgate'];
+
+  return Array.from(new Set([current, ...baseline]))
+    .filter((code) => canReadTestament(getTranslation(code), selectedBook.testament))
+    .slice(0, 5);
 }
 
 export function App() {
-  const [selectedPassageId, setSelectedPassageId] = useState(passages[0].id);
-  const [activeVerseId, setActiveVerseId] = useState(passages[0].verses[0].id);
+  const [translationCode, setTranslationCode] = useState<TranslationCode>(defaultTranslation);
+  const [books, setBooks] = useState<BibleBook[]>([]);
+  const [bookCode, setBookCode] = useState('JHN');
+  const [chapter, setChapter] = useState(3);
+  const [activeVerseNumber, setActiveVerseNumber] = useState(16);
   const [activeLens, setActiveLens] = useState<Lens>('Context');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [assistantPrompt, setAssistantPrompt] = useState('What is the main idea here?');
-  const [assistantAnswer, setAssistantAnswer] = useState(() =>
-    buildAssistantResponse('What is the main idea here?', passages[0].id),
-  );
-  const [notes, setNotes] = useState<StudyNote[]>(initialNotes);
+  const [lookup, setLookup] = useState('John 3:16');
+  const [assistantPrompt, setAssistantPrompt] = useState('Give me context');
+  const [assistantAnswer, setAssistantAnswer] = useState('');
+  const [notes, setNotes] = useState<StudyNote[]>(loadNotes);
   const [noteDraft, setNoteDraft] = useState('');
+  const [indexState, setIndexState] = useState<LoadState>('idle');
+  const [chapterState, setChapterState] = useState<LoadState>('idle');
+  const [chapterData, setChapterData] = useState<ChapterPayload | null>(null);
+  const [parallelVerses, setParallelVerses] = useState<Array<{ code: TranslationCode; verse: VersePayload }>>([]);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const selectedPassage = passages.find((passage) => passage.id === selectedPassageId) ?? passages[0];
-  const activeVerse =
-    selectedPassage.verses.find((verse) => verse.id === activeVerseId) ?? selectedPassage.verses[0];
+  const translation = getTranslation(translationCode);
+  const selectedBook = books.find((book) => book.code === bookCode);
+  const chapterNumbers = selectedBook ? getChapterNumbers(translationCode, selectedBook.code) : [chapter];
+  const activeVerse = chapterData?.verses.find((verse) => verse.verse === activeVerseNumber);
+  const currentReference = formatReference(selectedBook, chapter, activeVerse?.verse);
+  const savedReference = `${bookCode}.${chapter}.${activeVerseNumber}`;
+  const bookPosition = Math.max(books.findIndex((book) => book.code === bookCode) + 1, 1);
+  const libraryProgress = books.length ? (bookPosition / books.length) * 100 : 0;
 
-  const searchResults = useMemo(() => {
-    const query = searchTerm.trim().toLowerCase();
-    if (!query) {
-      return selectedPassage.verses.slice(0, 3).map((verse) => ({
-        reference: `${selectedPassage.reference} v${verse.number}`,
-        text: verse.text,
-      }));
+  const chapterMatches = useMemo(() => {
+    const query = lookup.trim().toLowerCase();
+
+    if (!chapterData) {
+      return [];
     }
 
-    return passages
-      .flatMap((passage) =>
-        passage.verses.map((verse) => ({
-          reference: `${passage.reference} v${verse.number}`,
-          text: verse.text,
-          searchable: `${passage.reference} ${passage.theme} ${verse.text} ${verse.keywords.join(' ')}`.toLowerCase(),
-        })),
-      )
-      .filter((result) => result.searchable.includes(query))
-      .slice(0, 5);
-  }, [searchTerm, selectedPassage]);
+    if (!query || parseReference(query, books, translationCode)) {
+      return chapterData.verses.slice(0, 6);
+    }
 
-  const passageNotes = notes.filter((note) => note.reference === selectedPassage.reference);
-  const completedPlanCount = selectedPassage.id === 'john-1' ? 4 : selectedPassage.id === 'psalm-23' ? 2 : 3;
+    return chapterData.verses
+      .filter((verse) => {
+        const reference = `${chapterData.book} ${chapterData.chapter}:${verse.verse}`.toLowerCase();
+        return verse.text.toLowerCase().includes(query) || reference.includes(query);
+      })
+      .slice(0, 8);
+  }, [books, chapterData, lookup, translationCode]);
 
-  function changePassage(passageId: string) {
-    const nextPassage = passages.find((passage) => passage.id === passageId) ?? passages[0];
-    setSelectedPassageId(nextPassage.id);
-    setActiveVerseId(nextPassage.verses[0].id);
-    setAssistantAnswer(buildAssistantResponse(assistantPrompt, nextPassage.id));
+  const passageNotes = notes.filter((note) => note.reference === savedReference);
+  const activeWords = getSignificantWords(activeVerse?.text ?? '');
+
+  useEffect(() => {
+    let ignore = false;
+    setIndexState('loading');
+    setErrorMessage('');
+
+    fetchBookIndex(translationCode)
+      .then((nextBooks) => {
+        if (ignore) {
+          return;
+        }
+
+        const currentBook = nextBooks.find((book) => book.code === bookCode);
+        const fallbackBook =
+          nextBooks.find((book) => book.code === 'JHN') ??
+          nextBooks.find((book) => book.code === 'GEN') ??
+          nextBooks[0];
+
+        setBooks(nextBooks);
+
+        if (!currentBook && fallbackBook) {
+          setBookCode(fallbackBook.code);
+          setChapter(fallbackBook.code === 'JHN' ? 3 : 1);
+          setActiveVerseNumber(fallbackBook.code === 'JHN' ? 16 : 1);
+        } else if (currentBook) {
+          setChapter((currentChapter) => clampNumber(currentChapter, 1, currentBook.chapterCount));
+        }
+
+        setIndexState('ready');
+      })
+      .catch((error: Error) => {
+        if (ignore) {
+          return;
+        }
+
+        setErrorMessage(error.message);
+        setIndexState('error');
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [translationCode]);
+
+  useEffect(() => {
+    if (!selectedBook) {
+      return;
+    }
+
+    let ignore = false;
+    setChapterState('loading');
+    setErrorMessage('');
+
+    fetchChapter(translationCode, selectedBook.code, chapter)
+      .then((nextChapter) => {
+        if (ignore) {
+          return;
+        }
+
+        setChapterData(nextChapter);
+        setActiveVerseNumber((currentVerse) =>
+          nextChapter.verses.some((verse) => verse.verse === currentVerse)
+            ? currentVerse
+            : (nextChapter.verses[0]?.verse ?? 1),
+        );
+        setChapterState('ready');
+      })
+      .catch((error: Error) => {
+        if (ignore) {
+          return;
+        }
+
+        setErrorMessage(error.message);
+        setChapterData(null);
+        setChapterState('error');
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [chapter, selectedBook, translationCode]);
+
+  useEffect(() => {
+    if (!activeVerse || !selectedBook) {
+      setParallelVerses([]);
+      return;
+    }
+
+    let ignore = false;
+    const parallelCodes = getParallelCodes(translationCode, selectedBook);
+
+    Promise.all(
+      parallelCodes.map((code) =>
+        fetchVerse(code, selectedBook.code, chapter, activeVerse.verse)
+          .then((verse) => ({ code, verse }))
+          .catch(() => null),
+      ),
+    ).then((results) => {
+      if (!ignore) {
+        setParallelVerses(results.filter(Boolean) as Array<{ code: TranslationCode; verse: VersePayload }>);
+      }
+    });
+
+    return () => {
+      ignore = true;
+    };
+  }, [activeVerse, chapter, selectedBook, translationCode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(notesKey, JSON.stringify(notes));
+  }, [notes]);
+
+  useEffect(() => {
+    setAssistantAnswer(buildAssistantResponse(assistantPrompt, translation.name, currentReference, activeVerse, chapterData));
+  }, [activeVerse, assistantPrompt, chapterData, currentReference, translation.name]);
+
+  function changeTranslation(nextTranslation: TranslationCode) {
+    setTranslationCode(nextTranslation);
+  }
+
+  function changeBook(nextBookCode: string) {
+    setBookCode(nextBookCode);
+    setChapter(1);
+    setActiveVerseNumber(1);
+  }
+
+  function changeChapter(nextChapter: number) {
+    if (!selectedBook) {
+      return;
+    }
+
+    setChapter(clampNumber(nextChapter, 1, selectedBook.chapterCount));
+    setActiveVerseNumber(1);
+  }
+
+  function handleLookup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const target = parseReference(lookup, books, translationCode);
+
+    if (!target) {
+      return;
+    }
+
+    setBookCode(target.bookCode);
+    setChapter(target.chapter);
+    setActiveVerseNumber(target.verse ?? 1);
   }
 
   function askAssistant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setAssistantAnswer(buildAssistantResponse(assistantPrompt, selectedPassage.id));
+    setAssistantAnswer(buildAssistantResponse(assistantPrompt, translation.name, currentReference, activeVerse, chapterData));
   }
 
   function addNote(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedNote = noteDraft.trim();
 
-    if (!trimmedNote) {
+    if (!trimmedNote || !activeVerse) {
       return;
     }
 
     setNotes((currentNotes) => [
       {
         id: `note-${Date.now()}`,
-        reference: selectedPassage.reference,
-        verse: activeVerse.number,
+        reference: savedReference,
+        verse: activeVerse.verse,
         body: trimmedNote,
-        tag: 'Note',
+        tag: translation.abbreviation,
       },
       ...currentNotes,
     ]);
@@ -147,14 +400,15 @@ export function App() {
           </a>
         </nav>
 
-        <section className="plan-summary" aria-label="Reading plan progress">
+        <section className="plan-summary" aria-label="Bible library progress">
           <div className="plan-topline">
             <ListChecks size={17} />
-            <span>Reading plan</span>
+            <span>{translation.abbreviation} library</span>
           </div>
-          <strong>{completedPlanCount}/7</strong>
+          <strong>{books.length || '--'}</strong>
+          <span className="metric-label">books available</span>
           <div className="progress-track">
-            <div style={{ width: `${(completedPlanCount / 7) * 100}%` }} />
+            <div style={{ width: `${libraryProgress}%` }} />
           </div>
         </section>
       </aside>
@@ -162,16 +416,16 @@ export function App() {
       <section className="workspace">
         <header className="topbar">
           <div className="passage-select">
-            <label htmlFor="passage">Passage</label>
+            <label htmlFor="translation">Translation</label>
             <div>
               <select
-                id="passage"
-                value={selectedPassageId}
-                onChange={(event) => changePassage(event.target.value)}
+                id="translation"
+                value={translationCode}
+                onChange={(event) => changeTranslation(event.target.value as TranslationCode)}
               >
-                {passages.map((passage) => (
-                  <option key={passage.id} value={passage.id}>
-                    {passage.reference}
+                {translations.map((item) => (
+                  <option key={item.code} value={item.code}>
+                    {item.abbreviation} - {item.name}
                   </option>
                 ))}
               </select>
@@ -179,27 +433,64 @@ export function App() {
             </div>
           </div>
 
-          <form className="global-search" id="search" role="search">
+          <div className="passage-select">
+            <label htmlFor="book">Book</label>
+            <div>
+              <select
+                id="book"
+                value={selectedBook?.code ?? ''}
+                disabled={indexState === 'loading' || !books.length}
+                onChange={(event) => changeBook(event.target.value)}
+              >
+                {books.map((book) => (
+                  <option key={book.code} value={book.code}>
+                    {book.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={16} />
+            </div>
+          </div>
+
+          <div className="passage-select">
+            <label htmlFor="chapter">Chapter</label>
+            <div>
+              <select
+                id="chapter"
+                value={chapter}
+                disabled={!selectedBook}
+                onChange={(event) => changeChapter(Number(event.target.value))}
+              >
+                {chapterNumbers.map((chapterNumber) => (
+                  <option key={chapterNumber} value={chapterNumber}>
+                    {chapterNumber}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={16} />
+            </div>
+          </div>
+
+          <form className="global-search" id="search" role="search" onSubmit={handleLookup}>
             <Search size={18} />
             <input
-              aria-label="Search passages"
-              placeholder="Search light, shepherd, Spirit..."
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
+              aria-label="Search current chapter or jump to reference"
+              placeholder="John 3:16 or a word in this chapter"
+              value={lookup}
+              onChange={(event) => setLookup(event.target.value)}
             />
+            <button type="submit">Go</button>
           </form>
-
-          <button className="icon-button" aria-label="Open command menu" title="Command menu">
-            <Command size={18} />
-          </button>
         </header>
 
         <div className="content-grid">
           <section className="reader-panel" id="reader" aria-labelledby="reader-title">
             <div className="panel-heading">
               <div>
-                <p>{selectedPassage.translation}</p>
-                <h1 id="reader-title">{selectedPassage.reference}</h1>
+                <p>
+                  {translation.name} - {translation.coverage}
+                </p>
+                <h1 id="reader-title">{formatReference(selectedBook, chapter)}</h1>
               </div>
               <button className="soft-button">
                 <Bookmark size={17} />
@@ -209,34 +500,60 @@ export function App() {
 
             <div className="theme-strip">
               <Sparkles size={18} />
-              <span>{selectedPassage.theme}</span>
+              <span>
+                {translation.language} text, {translation.year}. Source: OriginsAPI public-domain corpus.
+              </span>
             </div>
 
-            <article className="scripture-text">
-              {selectedPassage.verses.map((verse) => (
-                <button
-                  key={verse.id}
-                  className={verse.id === activeVerse.id ? 'verse active' : 'verse'}
-                  onClick={() => setActiveVerseId(verse.id)}
-                >
-                  <sup>{verse.number}</sup>
-                  <span>{verse.text}</span>
-                </button>
-              ))}
-            </article>
+            <div className="chapter-actions">
+              <button disabled={chapter <= 1} onClick={() => changeChapter(chapter - 1)}>
+                <ArrowLeft size={17} />
+                Previous
+              </button>
+              <span>
+                {selectedBook?.chapterCount ?? 0} chapters - {chapterData?.verses.length ?? 0} verses loaded
+              </span>
+              <button
+                disabled={!selectedBook || chapter >= selectedBook.chapterCount}
+                onClick={() => changeChapter(chapter + 1)}
+              >
+                Next
+                <ArrowRight size={17} />
+              </button>
+            </div>
+
+            {errorMessage && (
+              <div className="state-message error">
+                <AlertCircle size={18} />
+                <span>{errorMessage}</span>
+              </div>
+            )}
+
+            {chapterState === 'loading' && <div className="state-message">Loading chapter text...</div>}
+
+            {chapterState === 'ready' && chapterData && (
+              <article className="scripture-text" dir={translation.direction}>
+                {chapterData.verses.map((verse) => (
+                  <button
+                    key={verse.reference}
+                    className={verse.verse === activeVerseNumber ? 'verse active' : 'verse'}
+                    onClick={() => setActiveVerseNumber(verse.verse)}
+                  >
+                    <sup>{verse.verse}</sup>
+                    <span>{verse.text}</span>
+                  </button>
+                ))}
+              </article>
+            )}
           </section>
 
           <aside className="study-panel" aria-label="Study guide">
             <div className="panel-heading compact">
               <div>
                 <p>Selected verse</p>
-                <h2>
-                  {selectedPassage.book} {activeVerse.number}
-                </h2>
+                <h2>{currentReference}</h2>
               </div>
-              <button className="icon-button" aria-label="Toggle side panel" title="Toggle side panel">
-                <PanelRight size={18} />
-              </button>
+              <span className="source-pill">{translation.abbreviation}</span>
             </div>
 
             <div className="lens-tabs" aria-label="Study lenses">
@@ -257,8 +574,11 @@ export function App() {
                   <div className="card-icon">
                     <FileText size={18} />
                   </div>
-                  <h3>Passage Context</h3>
-                  <p>{selectedPassage.overview}</p>
+                  <h3>Chapter Context</h3>
+                  <p>
+                    {selectedBook?.name} is in the {selectedBook?.testament === 'old' ? 'Old' : 'New'} Testament.
+                    This chapter has {chapterData?.verses.length ?? 0} loaded verses in {translation.abbreviation}.
+                  </p>
                 </>
               )}
 
@@ -267,22 +587,24 @@ export function App() {
                   <div className="card-icon blue">
                     <Brain size={18} />
                   </div>
-                  <h3>{selectedPassage.wordStudy.word}</h3>
-                  <p>
-                    <strong>{selectedPassage.wordStudy.transliteration}</strong>: {selectedPassage.wordStudy.meaning}
-                  </p>
+                  <h3>Study Terms</h3>
+                  <div className="word-list">
+                    {activeWords.length ? activeWords.map((word) => <span key={word}>{word}</span>) : <span>None</span>}
+                  </div>
                 </>
               )}
 
-              {activeLens === 'Cross refs' && (
+              {activeLens === 'Parallel' && (
                 <>
                   <div className="card-icon green">
-                    <CircleHelp size={18} />
+                    <Highlighter size={18} />
                   </div>
-                  <h3>Cross References</h3>
-                  <div className="reference-list">
-                    {selectedPassage.crossRefs.map((reference) => (
-                      <button key={reference}>{reference}</button>
+                  <h3>Parallel Texts</h3>
+                  <div className="parallel-list">
+                    {parallelVerses.map((item) => (
+                      <p key={item.code} dir={getTranslation(item.code).direction}>
+                        <strong>{getTranslation(item.code).abbreviation}</strong> {item.verse.text}
+                      </p>
                     ))}
                   </div>
                 </>
@@ -292,11 +614,11 @@ export function App() {
             <div className="commentary-stack">
               <div className="section-title">
                 <Highlighter size={17} />
-                <h3>Commentary</h3>
+                <h3>Study Checks</h3>
               </div>
-              {selectedPassage.commentary.map((comment) => (
-                <p key={comment}>{comment}</p>
-              ))}
+              <p>Read the selected verse inside the chapter before using it as a standalone proof text.</p>
+              <p>Compare wording across the parallel panel when the selected verse exists in those texts.</p>
+              <p>Modern copyrighted translations should be added only through licensed provider access.</p>
             </div>
           </aside>
         </div>
@@ -324,12 +646,14 @@ export function App() {
           <div className="search-panel">
             <div className="section-title">
               <Search size={18} />
-              <h2>Search Results</h2>
+              <h2>Chapter Search</h2>
             </div>
             <div className="result-list">
-              {searchResults.map((result) => (
-                <button key={`${result.reference}-${result.text}`}>
-                  <strong>{result.reference}</strong>
+              {chapterMatches.map((result) => (
+                <button key={result.reference} onClick={() => setActiveVerseNumber(result.verse)}>
+                  <strong>
+                    {selectedBook?.name} {chapter}:{result.verse}
+                  </strong>
                   <span>{result.text}</span>
                 </button>
               ))}
@@ -344,7 +668,7 @@ export function App() {
             <form onSubmit={addNote} className="note-form">
               <textarea
                 aria-label="New note"
-                placeholder={`Note on verse ${activeVerse.number}`}
+                placeholder={`Note on ${currentReference}`}
                 value={noteDraft}
                 onChange={(event) => setNoteDraft(event.target.value)}
               />
@@ -370,8 +694,8 @@ export function App() {
           <div className="study-image">
             <img src={studyDesk} alt="Bible study desk with open Scripture, notebook, pen, and phone" />
             <div>
-              <span>Workspace</span>
-              <strong>Read, search, and write in one flow.</strong>
+              <span>Library</span>
+              <strong>{translations.length} public-domain texts are wired into the reader.</strong>
             </div>
           </div>
 
@@ -393,7 +717,7 @@ export function App() {
         <footer className="app-footer">
           <span>
             <Clock3 size={16} />
-            Prototype content uses public-domain World English Bible excerpts.
+            Public-domain Bible text is loaded from OriginsAPI. Licensed translations need publisher/API.Bible rights.
           </span>
         </footer>
       </section>

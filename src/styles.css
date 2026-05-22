@@ -131,6 +131,13 @@ button {
   font-size: 1.9rem;
 }
 
+.metric-label {
+  margin-top: -0.5rem;
+  color: #64706c;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .progress-track {
   height: 0.45rem;
   overflow: hidden;
@@ -156,7 +163,7 @@ button {
   top: 0;
   z-index: 5;
   display: grid;
-  grid-template-columns: minmax(12rem, 18rem) minmax(12rem, 1fr) 2.75rem;
+  grid-template-columns: minmax(12rem, 18rem) minmax(11rem, 1fr) minmax(6rem, 8rem) minmax(18rem, 1.2fr);
   gap: 0.75rem;
   align-items: center;
   padding: 0.65rem;
@@ -205,6 +212,16 @@ button {
 .global-search {
   gap: 0.6rem;
   padding: 0 0.85rem;
+}
+
+.global-search button {
+  min-width: 2.7rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: #244c48;
+  color: white;
+  font-weight: 900;
 }
 
 .global-search input,
@@ -321,6 +338,57 @@ h3 {
   font-weight: 800;
 }
 
+.chapter-actions {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr) minmax(7rem, auto);
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.chapter-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.45rem;
+  border: 0;
+  border-radius: 0.7rem;
+  background: #e6f0ed;
+  color: #244c48;
+  font-weight: 900;
+}
+
+.chapter-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.chapter-actions span {
+  color: #65716d;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.state-message {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 4rem;
+  margin-bottom: 0.8rem;
+  padding: 0 1rem;
+  border-radius: 0.8rem;
+  background: #f2f5f3;
+  color: #52615d;
+  font-weight: 800;
+}
+
+.state-message.error {
+  background: #fff1ec;
+  color: #8f4a2b;
+}
+
 .scripture-text {
   display: grid;
   gap: 0.55rem;
@@ -363,6 +431,21 @@ h3 {
   font-family: Georgia, "Times New Roman", serif;
   font-size: clamp(1.08rem, 2vw, 1.36rem);
   line-height: 1.55;
+}
+
+.scripture-text[dir="rtl"] .verse {
+  grid-template-columns: minmax(0, 1fr) 2.25rem;
+}
+
+.scripture-text[dir="rtl"] .verse sup {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.scripture-text[dir="rtl"] .verse span {
+  grid-column: 1;
+  grid-row: 1;
+  text-align: right;
 }
 
 .study-panel {
@@ -441,6 +524,55 @@ h3 {
   background: rgba(255, 255, 255, 0.1);
   color: white;
   font-weight: 800;
+}
+
+.source-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.2rem;
+  padding: 0 0.7rem;
+  border-radius: 999rem;
+  background: #e6f0ed;
+  color: #244c48;
+  font-weight: 900;
+}
+
+.word-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.word-list span {
+  display: inline-flex;
+  min-height: 2rem;
+  align-items: center;
+  padding: 0 0.65rem;
+  border-radius: 999rem;
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-weight: 800;
+}
+
+.parallel-list {
+  display: grid;
+  gap: 0.65rem;
+  max-height: 20rem;
+  overflow: auto;
+}
+
+.parallel-list p {
+  margin: 0;
+  padding: 0.7rem;
+  border-radius: 0.7rem;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.parallel-list strong {
+  display: inline-block;
+  margin-right: 0.35rem;
+  color: #ffffff;
 }
 
 .commentary-stack {
@@ -736,5 +868,9 @@ h3 {
   .verse {
     grid-template-columns: 1.9rem minmax(0, 1fr);
     padding: 0.7rem;
+  }
+
+  .chapter-actions {
+    grid-template-columns: 1fr;
   }
 }
